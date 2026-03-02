@@ -41,9 +41,18 @@ Tracktion Engine is a library, not a complete DAW. You supply 100% of the UI and
 | Qt6 / QML | Modern GPU rendering, fluid animations | Two-framework complexity, separate build chain | Phase 4 option |
 | Electron / Tauri | Modern web UI, huge ecosystem | 30ms+ audio latency, not suitable for pro DAW | Rejected |
 
-**Decision: JUCE UI now, Qt6 migration optional in Phase 4**
+**Decision: JUCE 8 UI now, Qt6 migration optional in Phase 4**
 
-JUCE's `LookAndFeel` system is powerful enough to build a fully custom, modern-looking dark theme. With custom `Component::paint()` implementations, the UI can look as polished as any commercial DAW.
+JUCE 8 (current release, latest 8.0.11) introduces several major improvements directly relevant to a DAW:
+
+| JUCE 8 Feature | Relevance to Wavy Labs |
+|----------------|------------------------|
+| Direct2D renderer (Windows) | Blazing fast GPU-accelerated timeline and waveform rendering |
+| MIDI 2.0 / UMP (8.0.11) | Native MIDI 2.0 device support — aligns with CLAP's MIDI 2.0 advantage |
+| Windows Arm support | Runs natively on Surface Pro X / Snapdragon laptops |
+| Improved text rendering | Sharper UI labels and parameter readouts at all DPI |
+
+JUCE 8's `LookAndFeel` system is powerful enough to build a fully custom, modern-looking dark theme. With custom `Component::paint()` implementations, the UI can look as polished as any commercial DAW.
 
 Zrythm v2 is migrating to JUCE + Qt6 — validates both choices but we avoid the complexity of two frameworks at launch.
 
@@ -82,7 +91,7 @@ Zrythm v2 is migrating to JUCE + Qt6 — validates both choices but we avoid the
 | Standard | License | Multi-thread | MIDI 2.0 | Adoption | Verdict |
 |----------|---------|-------------|----------|----------|---------|
 | VST3 | Proprietary SDK (free) | Limited | No | Universal | Secondary |
-| CLAP | MIT | Full | Yes | Growing (15 DAWs) | **Primary** |
+| CLAP | MIT | Full | Yes | Growing — predicted to overtake VST3 | **Primary** |
 | AU | Apple | Limited | No | macOS only | macOS compat |
 | LV2 | ISC | Good | Partial | Linux standard | Linux compat |
 
@@ -93,6 +102,8 @@ CLAP (Clever Audio Plugin) is an open standard with:
 - True multi-threading support (critical for AI plugin chains)
 - Full MIDI 2.0 + per-note automation (polyphonic expression)
 - Adopted by Bitwig Studio, REAPER, and growing
+- KVR Audio industry analysis (2026): CLAP predicted to overtake VST3 as the primary standard within the next few years
+- **JUCE 8 alignment**: JUCE 8's native MIDI 2.0 / UMP support complements CLAP's MIDI 2.0 capabilities — both frameworks now speak the same modern MIDI protocol
 
 ---
 
@@ -135,12 +146,26 @@ Note: No truly open-source equivalent to iZotope Ozone exists yet. Matchering is
 
 ### 4.4 Voice / Instrument Cloning
 
-| Model | License | Quality | Training Data | Selected |
-|-------|---------|---------|--------------|---------|
-| **RVC v3** | MIT | Excellent | 5–10 min audio | **Primary** |
-| **StyleTTS2** | MIT | ElevenLabs-level | 30+ min audio | High quality option |
-| Kokoro-82M | Apache 2.0 | Near-ElevenLabs | Few seconds | Fast inference |
-| Coqui XTTS-v2 | Non-commercial | Excellent | 6 seconds | **Rejected** — license |
+| Model | License | Quality | Training Required | Tier | Selected |
+|-------|---------|---------|------------------|------|---------|
+| **Kokoro-82M** | Apache 2.0 | Near-ElevenLabs | None (zero-shot) | **Tier 1 candidate** | **Primary TTS** |
+| **RVC v3** | MIT | Excellent | 5–10 min audio | Tier 2 | **Primary cloning** |
+| **StyleTTS2** | MIT | ElevenLabs-level | 30+ min audio | Tier 2 | High quality option |
+| **Qwen3-TTS** | Open (Alibaba 2025) | Near SOTA | None (zero-shot) | Tier 2 | Zero-shot synthesis |
+| **Chatterbox** | Open source | Good | None | Tier 2 | No-setup cloning |
+| Coqui XTTS-v2 | Non-commercial | Excellent | 6 seconds | — | **Rejected** — license |
+
+**Kokoro-82M elevated to Tier 1 candidate (2026 update):**
+- Apache 2.0 license (fully permissive — can ship inside the app binary)
+- Only 82M parameters — small enough to ship bundled with the app
+- Runs on CPU with no GPU required
+- ONNX-exportable: can be loaded via ONNX Runtime C++ API (same path as demucs.cpp)
+- This means voice preview / TTS can work for every user with zero setup, same as stem separation
+- Inworld AI ranked it as best open-source option for real-time applications (2026)
+
+**Qwen3-TTS (2025, Alibaba):** Uses a discrete multi-codebook language model that treats audio generation like language modeling — goes directly from text to speech tokens. No fine-tuning required for voice matching. Strong alternative to Kokoro-82M for Tier 2.
+
+**Chatterbox:** Community-validated open source voice cloning that works reliably. No commercial restrictions. Good for users who want quick voice matching without training a full RVC model.
 
 **Avoid Coqui XTTS-v2**: Coqui AI shut down December 2025, license is non-commercial only.
 
@@ -171,8 +196,8 @@ Tier 1 — C++ (embedded, zero user setup)
   Ships: inside the app binary
 
 Tier 2 — Python sidecar (installs on first Tier 2 feature use)
-  DiffRhythm, MusicGen, Matchering, RVC v3, Ollama
-  Covers: music generation, mastering, voice cloning
+  DiffRhythm, MusicGen, Matchering, RVC v3, Qwen3-TTS, Chatterbox, Ollama
+  Covers: music generation, mastering, voice cloning, zero-shot TTS
   Ships: auto-downloaded, runs as localhost gRPC server
 
 Tier 3 — Cloud (optional SaaS)
@@ -180,9 +205,13 @@ Tier 3 — Cloud (optional SaaS)
   Ships: managed cloud endpoints
 ```
 
-**Key UX benefit of Tier 1:** Stem separation — the most immediately useful AI feature — works for 100% of users with no setup, no Python, no GPU required. This is a clear competitive advantage on first launch.
+**Key UX benefit of Tier 1 (updated 2026):** Two AI features now ship in the app with zero setup:
+1. **Stem separation** via demucs.cpp — GGML C++17, works on every machine
+2. **Voice preview / TTS** via Kokoro-82M — Apache 2.0, 82M params, ONNX-capable, CPU-only
 
-**Python is still used** for everything that doesn't yet have a mature C++ equivalent (transformer-scale generation models, voice cloning training). This will shift over time as ONNX exports mature.
+This means users get two compelling AI features on first launch before ever touching Python.
+
+**Python is still used** for everything that doesn't yet have a mature C++ equivalent (transformer-scale generation models, full voice cloning training). This will shift over time as ONNX exports mature.
 
 ## 7. Communication Layer — Decision Log
 

@@ -1,9 +1,11 @@
 # Wavy Labs — Full Implementation Plan
 
-**Version:** 1.1
+**Version:** 1.2
 **Date:** March 1, 2026
 **Status:** Planning Phase
-**Changelog:** v1.1 — AI backend revised from Python-only to tiered C++/Python architecture
+**Changelog:**
+- v1.1 — AI backend revised from Python-only to tiered C++/Python architecture
+- v1.2 — Modernization pass: JUCE 8 features, Llama 4 replaces Llama 3.1, voice cloning model additions (Chatterbox, Qwen3-TTS, Kokoro-82M Tier 1 candidate), CLAP momentum update, Apple Silicon M4
 
 ---
 
@@ -59,13 +61,22 @@ Engine              ← singleton, initializes everything
 - ARA2 support (Melodyne-style integration)
 - Full transport with scrubbing and looping
 
-### 2.2 UI Framework — JUCE
+### 2.2 UI Framework — JUCE 8
 
-**Decision: JUCE UI (not Qt6)**
+**Decision: JUCE 8 UI (not Qt6)**
 
-JUCE is part of the same framework as Tracktion Engine — zero integration friction. The plan is to build with JUCE UI first, and optionally migrate to Qt6/QML for Phase 4+ polish.
+JUCE 8 is the current release (latest: 8.0.11) and is part of the same framework as Tracktion Engine — zero integration friction. The plan is to build with JUCE 8 UI first, and optionally migrate to Qt6/QML for Phase 4+ polish.
 
-**Key JUCE UI components for DAW building:**
+**JUCE 8 new features directly relevant to Wavy Labs:**
+
+| Feature | Impact |
+|---------|--------|
+| Direct2D renderer (Windows) | Blazing fast GPU-accelerated timeline rendering on Windows |
+| MIDI 2.0 / UMP support (8.0.11) | Native MIDI 2.0 device communication — aligns with CLAP's MIDI 2.0 advantage |
+| Windows Arm support | Builds run natively on Windows-on-ARM (Surface Pro X, Snapdragon laptops) |
+| Improved text rendering | Sharper labels, fader values, and HUD overlays at all DPI levels |
+
+**Key JUCE 8 UI components for DAW building:**
 
 | Component | DAW Use |
 |-----------|---------|
@@ -103,7 +114,7 @@ JUCE is part of the same framework as Tracktion Engine — zero integration fric
 | AU | Apple (macOS only) | Required for macOS users |
 | LV2 | ISC (Linux) | Linux compatibility |
 
-CLAP is the future-facing choice. It is MIT licensed, supported by Bitwig, REAPER, and growing. Adopted by 15 DAWs and 393 plugins as of 2026.
+CLAP is the future-facing choice. It is MIT licensed, supported by Bitwig Studio and REAPER, with active adoption momentum. Industry analysts (KVR Audio, 2026) predict CLAP will overtake VST3 as the primary standard within the next few years — JUCE 8's native MIDI 2.0 / UMP support further aligns the stack with CLAP's core advantages.
 
 ### 2.4 AI Backend — Tiered C++ / Python Architecture
 
@@ -121,7 +132,8 @@ TIER 2 — Python sidecar (auto-installs on first use, runs locally)
   DiffRhythm / MusicGen  → music generation (transformers, complex ONNX graph)
   Matchering + Essentia   → mastering & audio analysis
   RVC v3 / StyleTTS2      → voice cloning (training loop requires Python)
-  Ollama / Llama 3.1      → LLM orchestration for agentic pipeline
+  Qwen3-TTS / Chatterbox  → zero-shot voice synthesis (no training required)
+  Ollama / Llama 4        → LLM orchestration for agentic pipeline
   Communicates with C++ app via gRPC — never blocks audio thread.
 
 TIER 3 — Cloud fallback (optional SaaS subscription)
@@ -185,7 +197,7 @@ Music generation and voice cloning stay in Python for now — no production-read
 ```
 User Prompt: "lo-fi hip hop, 90 BPM, chill study vibes"
     ↓
-LLM Agent (Llama 3.1 via Ollama — local, private):
+LLM Agent (Llama 4 / Qwen3-Coder via Ollama — local, private):
   → Song structure, chord progression, BPM, key, mood
     ↓
 DiffRhythm / MusicGen:
@@ -250,17 +262,34 @@ This produces editable stems — not just a flat audio file. No other product do
 
 ### 3.4 Voice / Instrument Cloning
 
-**Primary: RVC v3**
+**Tier 1 candidate — Kokoro-82M (Apache 2.0)**
+- License: Apache 2.0 (fully permissive)
+- Size: Only 82M parameters — ships in the app, no GPU needed
+- Quality: Near-ElevenLabs quality
+- Key advantage: CPU-capable, ONNX-exportable → strong Tier 1 embedded candidate
+- Usage: Zero-shot TTS inference, voice style transfer, fast synthesis for preview
+
+**Tier 2 Primary — RVC v3 (voice cloning with training)**
 - Repo: https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI
 - License: MIT
 - Quality: Excellent — real-time capable
 - Training: Only 5–10 minutes of audio needed to clone a voice
 - Usage: Record/import sample → train model (1–2 hours locally) → apply to MIDI notes
 
-**Secondary: StyleTTS2**
+**Tier 2 Secondary — StyleTTS2 (high-quality cloning)**
 - License: MIT
 - Quality: Matches ElevenLabs Professional quality
-- Advantage: Transformer-based, better prosody control
+- Advantage: Transformer-based, better prosody control, 30+ min training audio
+
+**Tier 2 Addition — Qwen3-TTS (Alibaba, 2025)**
+- Architecture: Discrete multi-codebook language model — goes directly from text to speech tokens
+- Quality: Near state-of-the-art zero-shot voice cloning
+- Advantage: Does not require any training data to clone a new voice style
+
+**Tier 2 Addition — Chatterbox**
+- Open source voice cloning model that works reliably without commercial restrictions
+- Good balance of quality and inference speed
+- No training required for basic voice matching
 
 **Avoid: Coqui XTTS-v2** — non-commercial license restriction; Coqui AI shut down December 2025.
 
@@ -299,7 +328,8 @@ This produces editable stems — not just a flat audio file. No other product do
 │  demucs.cpp          │  DiffRhythm / MusicGen (generation)      │
 │  (stem separation)   │  Matchering + Essentia (mastering)       │
 │                      │  RVC v3 / StyleTTS2 (voice cloning)      │
-│  ONNX Runtime C++    │  Ollama / Llama 3.1 (LLM orchestration)  │
+│  ONNX Runtime C++    │  Qwen3-TTS / Chatterbox (zero-shot TTS)  │
+│  Kokoro-82M (TTS)    │  Ollama / Llama 4 (LLM orchestration)    │
 │  (noise reduction,   │                                          │
 │   small models)      │  FastAPI gRPC server on localhost:50051  │
 │                      │                                          │
@@ -321,8 +351,9 @@ This produces editable stems — not just a flat audio file. No other product do
 | Stem separation | Tier 1 | 5–60s OK | demucs.cpp (GGML, C++17) |
 | Music generation | Tier 2 | 10–30s OK | DiffRhythm via Python gRPC |
 | Mastering | Tier 2 | 30–120s OK | Matchering via Python gRPC |
+| TTS / voice preview | Tier 1 | <200ms OK | Kokoro-82M via ONNX Runtime C++ |
 | Voice cloning training | Tier 2 | 1–2 hours OK | RVC v3 via Python gRPC |
-| Voice cloning inference | Tier 2 | <500ms OK | RVC v3 via Python gRPC |
+| Voice cloning inference | Tier 2 | <500ms OK | RVC v3 / Qwen3-TTS via Python gRPC |
 | Heavy generation (no GPU) | Tier 3 | 30–120s OK | Cloud endpoint |
 
 ---
@@ -392,10 +423,11 @@ WavyLabs/
 │   │   └── generator.py            ← DiffRhythm + MusicGen
 │   ├── matchering/
 │   │   └── mastering.py            ← Matchering + Essentia
-│   ├── rvc/
-│   │   └── cloner.py               ← RVC v3 voice cloning
+│   ├── voice/
+│   │   ├── rvc_cloner.py           ← RVC v3 voice cloning (training required)
+│   │   └── zero_shot_tts.py        ← Qwen3-TTS / Chatterbox (no training)
 │   └── llm/
-│       └── orchestrator.py         ← Ollama / Llama 3.1 agentic pipeline
+│       └── orchestrator.py         ← Ollama / Llama 4 agentic pipeline
 │
 ├── vendor/                         ← Tier 1: C++ AI dependencies
 │   ├── demucs.cpp/                 ← git submodule (MIT)
@@ -564,12 +596,14 @@ def serve():
 ```
 # ai_backend/requirements.txt
 # NOTE: Demucs is NOT here — stem separation runs via Tier 1 (demucs.cpp)
+# NOTE: Kokoro-82M is NOT here — TTS preview runs via Tier 1 (ONNX Runtime C++)
 audiocraft>=1.0.0      # MusicGen / DiffRhythm (music generation)
 matchering>=2.0.0      # AI mastering
 essentia>=2.1          # Audio analysis
-torch>=2.2.0           # PyTorch (for MusicGen, RVC)
+torch>=2.2.0           # PyTorch (for MusicGen, RVC, Qwen3-TTS)
 torchaudio>=2.2.0
-ollama>=0.1.0          # Local LLM (Llama 3.1 orchestration)
+transformers>=4.40.0   # Hugging Face transformers (Qwen3-TTS, Chatterbox)
+ollama>=0.1.0          # Local LLM (Llama 4 / Qwen3-Coder orchestration)
 grpcio>=1.62.0
 grpcio-tools>=1.62.0
 numpy>=1.26.0
@@ -661,7 +695,7 @@ Fine-tuning is well-documented and achievable:
 | Professional | NVIDIA RTX 4090 24GB | Multiple simultaneous AI models |
 | Cloud tier | NVIDIA A40/H100 | Commercial SaaS inference |
 
-Apple Silicon (M1/M2/M3) via Metal backend on ONNX Runtime — fully supported.
+Apple Silicon (M1–M4) via Metal backend on ONNX Runtime — fully supported. M4 Pro/Max deliver significant inference speed improvements for Tier 1 models.
 
 ---
 
@@ -731,7 +765,10 @@ Apple Silicon (M1/M2/M3) via Metal backend on ONNX Runtime — fully supported.
 | DiffRhythm | github.com/ASLP-lab/DiffRhythm | Tier 2: Music generation |
 | AudioCraft | github.com/facebookresearch/audiocraft | Tier 2: MusicGen |
 | Demucs (Python) | github.com/facebookresearch/demucs | Tier 2: Stem sep fallback |
-| RVC v3 | github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI | Tier 2: Voice cloning |
+| RVC v3 | github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI | Tier 2: Voice cloning (training) |
+| Qwen3-TTS | huggingface.co/Qwen/Qwen3-TTS | Tier 2: Zero-shot voice synthesis |
+| Chatterbox | open source voice cloning | Tier 2: Voice cloning (no training) |
+| Kokoro-82M | huggingface.co/hexgrad/Kokoro-82M | Tier 1 candidate: CPU TTS, Apache 2.0 |
 | Matchering | github.com/sergree/matchering | Tier 2: AI mastering |
 | Essentia | github.com/MTG/essentia | Tier 2: Audio analysis |
 | MusicGen fine-tune | github.com/ylacombe/musicgen-dreamboothing | Model training reference |
