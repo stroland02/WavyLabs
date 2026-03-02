@@ -113,13 +113,15 @@ Architecture similarity to Suno: latent diffusion model, generates full songs wi
 
 ### 4.2 Stem Separation
 
-| Model | License | SDR Quality | Speed | Selected |
-|-------|---------|-------------|-------|---------|
-| **Demucs v4** | MIT | 9.20 dB (SOTA) | Real-time GPU | **Primary** |
-| Spleeter | MIT | 6.5 dB | 100x real-time | Fallback |
-| Open-Unmix | MIT | 5.5–6.0 dB | Real-time | Lightweight option |
+| Model | Language | License | SDR Quality | Speed | Selected |
+|-------|----------|---------|-------------|-------|---------|
+| **demucs.cpp** | **C++17** | **MIT** | 9.20 dB (same weights) | Fast, CPU+GPU | **Tier 1 Primary** |
+| Demucs v4 ONNX | C++ via ONNX | MIT | 9.20 dB | GPU fast | **Tier 1 Alternative** |
+| Demucs v4 (Python) | Python | MIT | 9.20 dB (SOTA) | Real-time GPU | Tier 2 Fallback |
+| Spleeter | Python | MIT | 6.5 dB | 100x real-time | Tier 2 Fast fallback |
+| Open-Unmix | Python | MIT | 5.5–6.0 dB | Real-time | Lightweight option |
 
-**Demucs v4 selected** — state-of-the-art quality, MIT licensed, actively maintained by Meta. Spleeter as a fast/light fallback for weaker hardware.
+**demucs.cpp selected as primary** — identical model quality to Python Demucs v4 but runs in C++17 with GGML. Zero Python dependency. Ships inside the app binary. Demucs v4 ONNX (from Mixxx GSoC 2025) is a viable alternative via ONNX Runtime C++ API.
 
 ### 4.3 Auto-Mixing & Mastering
 
@@ -144,7 +146,45 @@ Note: No truly open-source equivalent to iZotope Ozone exists yet. Matchering is
 
 ---
 
-## 5. Communication Layer — Decision Log
+## 5. AI Backend Language — Decision Log (Updated v1.1)
+
+### Original Plan: Python-only backend
+Python was chosen because all AI libraries (audiocraft, demucs, matchering, rvc) ship as Python packages. Fastest path to working AI features.
+
+### Revised Plan: Tiered C++ / Python
+
+Research discovered that Python is NOT required for every feature:
+
+| Discovery | Implication |
+|-----------|------------|
+| **demucs.cpp** (MIT, github.com/sevagh/demucs.cpp) | C++17 port of Demucs v3+v4 using GGML. No Python. Stem separation works out of the box for every user. |
+| **Demucs v4 → ONNX** (Mixxx GSoC 2025) | Demucs v4 converted to ONNX format. Runnable via ONNX Runtime C++ API. Confirmed working. |
+| **ONNX Runtime C++ API** (onnxruntime.ai) | Full C++ API confirmed working in JUCE audio plugins (JUCE forum thread evidence). |
+| **Neutone SDK** (arxiv Aug 2025) | Framework for deploying PyTorch models as CLAP/VST3 plugins — AI becomes a loadable plugin. |
+
+### Final Decision: Three Tiers
+
+```
+Tier 1 — C++ (embedded, zero user setup)
+  demucs.cpp + ONNX Runtime
+  Covers: stem separation, small real-time models
+  Ships: inside the app binary
+
+Tier 2 — Python sidecar (installs on first Tier 2 feature use)
+  DiffRhythm, MusicGen, Matchering, RVC v3, Ollama
+  Covers: music generation, mastering, voice cloning
+  Ships: auto-downloaded, runs as localhost gRPC server
+
+Tier 3 — Cloud (optional SaaS)
+  Covers: heavy models, users without GPU
+  Ships: managed cloud endpoints
+```
+
+**Key UX benefit of Tier 1:** Stem separation — the most immediately useful AI feature — works for 100% of users with no setup, no Python, no GPU required. This is a clear competitive advantage on first launch.
+
+**Python is still used** for everything that doesn't yet have a mature C++ equivalent (transformer-scale generation models, voice cloning training). This will shift over time as ONNX exports mature.
+
+## 7. Communication Layer — Decision Log
 
 ### gRPC vs REST
 
@@ -160,7 +200,7 @@ Note: No truly open-source equivalent to iZotope Ozone exists yet. Matchering is
 
 ---
 
-## 6. Quality Benchmarks — Reference Product Analysis
+## 8. Quality Benchmarks — Reference Product Analysis
 
 ### Suno AI
 - Architecture (confirmed): Transformer autoregressive model + diffusion upscaler + neural singing synthesizer
@@ -179,7 +219,7 @@ Note: No truly open-source equivalent to iZotope Ozone exists yet. Matchering is
 
 ---
 
-## 7. Custom Model Training — Research Summary
+## 9. Custom Model Training — Research Summary
 
 ### Base Model for Fine-Tuning: MusicGen
 
@@ -204,7 +244,7 @@ MusicGen-small fine-tune: 1x A100, 8–24 hours, ~$50 cloud cost. Highly achieva
 
 ---
 
-## 8. Monetization Research
+## 10. Monetization Research
 
 ### Successful Open Source Audio Monetization Models
 
@@ -223,7 +263,7 @@ MusicGen-small fine-tune: 1x A100, 8–24 hours, ~$50 cloud cost. Highly achieva
 
 ---
 
-## 9. Architecture Patterns from Industry
+## 11. Architecture Patterns from Industry
 
 ### iZotope Three-Stage Pattern (Replicate This)
 1. User preference stage: genre, target, reference

@@ -1,8 +1,9 @@
 # Wavy Labs — Full Implementation Plan
 
-**Version:** 1.0
+**Version:** 1.1
 **Date:** March 1, 2026
 **Status:** Planning Phase
+**Changelog:** v1.1 — AI backend revised from Python-only to tiered C++/Python architecture
 
 ---
 
@@ -104,27 +105,61 @@ JUCE is part of the same framework as Tracktion Engine — zero integration fric
 
 CLAP is the future-facing choice. It is MIT licensed, supported by Bitwig, REAPER, and growing. Adopted by 15 DAWs and 393 plugins as of 2026.
 
-### 2.4 AI Backend — Python FastAPI + ONNX Runtime
+### 2.4 AI Backend — Tiered C++ / Python Architecture
 
-The AI backend runs as a separate Python process. The C++ audio engine communicates with it via **gRPC** on a worker thread — **never** on the real-time audio thread.
+Not all AI features require Python. The backend is split into three tiers based on what C++ inference can realistically handle today vs what still requires Python.
+
+#### The Three Tiers
 
 ```
-[Tracktion Engine — C++ audio thread]   ← never touched by AI
-[Worker thread] → gRPC → [Python FastAPI] → [AI model inference]
-                  ↑ async, non-blocking
+TIER 1 — Embedded C++ (ships inside the app binary, zero user setup)
+  demucs.cpp   → stem separation (GGML weights, MIT)
+  ONNX Runtime → noise reduction, small real-time models (C++ API)
+  No Python. No install step. Works on every user's machine out of the box.
+
+TIER 2 — Python sidecar (auto-installs on first use, runs locally)
+  DiffRhythm / MusicGen  → music generation (transformers, complex ONNX graph)
+  Matchering + Essentia   → mastering & audio analysis
+  RVC v3 / StyleTTS2      → voice cloning (training loop requires Python)
+  Ollama / Llama 3.1      → LLM orchestration for agentic pipeline
+  Communicates with C++ app via gRPC — never blocks audio thread.
+
+TIER 3 — Cloud fallback (optional SaaS subscription)
+  Larger model variants for users without a GPU
+  Managed inference endpoints — user pays per generation
 ```
 
-**Why gRPC over REST:**
+#### Communication Pattern
+
+```
+[Tracktion Engine — C++ real-time audio thread]   ← AI NEVER touches this
+[Worker thread]
+    ├── Tier 1: calls demucs.cpp / ONNX Runtime directly (in-process)
+    └── Tier 2: gRPC → Python FastAPI sidecar → model inference
+                ↑ async, streaming progress back to UI
+```
+
+#### Why gRPC for Tier 2 (not REST)
 - 3–7x smaller payloads than REST/JSON
 - 5–10x faster parsing
-- Streaming support for real-time progress updates
-- Language-agnostic (C++ client ↔ Python server)
+- Native streaming — progress updates flow back continuously ("Generating stems… 47%")
+- Strongly typed `.proto` contract between C++ and Python
+
+#### Why Not All-Python
+Python was the original plan because every AI library ships Python-first. However:
+- Stem separation (`demucs.cpp`, MIT) is already a mature C++17 port with GGML — zero Python needed
+- Mixxx (open source DJ software) completed a GSoC 2025 project converting Demucs v4 to ONNX for C++ — ONNX weights are available
+- ONNX Runtime has a full C++ API, confirmed working in JUCE audio plugins
+- Shipping stem separation in pure C++ means the DAW's most-used AI feature works for every user with no setup, no Python, no GPU required
+
+Music generation and voice cloning stay in Python for now — no production-ready C++ equivalent exists for transformer-scale models yet. That can be migrated to ONNX/C++ as the models mature.
 
 ### 2.5 Communication & Storage
 
 | Layer | Technology | Reason |
 |-------|-----------|--------|
-| C++ ↔ Python | gRPC + Protocol Buffers | Low latency, streaming |
+| Tier 1 AI | ONNX Runtime C++ / demucs.cpp | In-process, zero latency |
+| Tier 2 AI | gRPC + Protocol Buffers | Low latency, streaming, typed |
 | Local storage | SQLite | Single-file projects, fast |
 | Cloud sync (future) | PostgreSQL + S3 | Optional SaaS tier |
 
@@ -169,21 +204,30 @@ This produces editable stems — not just a flat audio file. No other product do
 
 ### 3.2 Stem Separation
 
-**Primary: Demucs v4 (Meta)**
+**Tier 1 — C++ (ships in app, no Python required): demucs.cpp**
+- Repo: https://github.com/sevagh/demucs.cpp
+- License: MIT, 160 stars
+- What: C++17 port of Demucs v3 and v4 using GGML + Eigen3 — same tech as llama.cpp
+- Quality: Same model weights as Python Demucs v4 (9.20 dB SDR)
+- Setup: Load GGML-format weights at startup, call from C++ worker thread
+- Powers: freemusicdemixer.com (live web demo proving it works)
+
+**Tier 1 — ONNX alternative: Demucs v4 ONNX (Mixxx GSoC 2025)**
+- Mixxx's GSoC 2025 project successfully converted Demucs v4 to ONNX format
+- ONNX weights can be loaded via ONNX Runtime C++ API — no Python
+- Reference: mixxx.org/news/2025-10-27-gsoc2025-demucs-to-onnx-dhunstack
+
+**Tier 2 — Python fallback: Demucs v4 (Meta) via gRPC**
 - Repo: https://github.com/facebookresearch/demucs
-- License: MIT
-- Quality: 9.20 dB SDR — state of the art
+- License: MIT — use if C++ tier needs fallback or for 6-stem output
 - Speed: Real-time capable on GPU
-- Output: Vocals, drums, bass, other (4-stem) or 6-stem
 
-**Secondary: Spleeter (Deezer)**
+**Tier 2 — Fast fallback: Spleeter (Deezer)**
 - Repo: https://github.com/deezer/spleeter
-- License: MIT
-- Speed: 100x real-time on GPU — faster than Demucs
-- Quality: 6.5 dB SDR (lower quality but much faster)
-- Use case: Quick preview / weaker hardware
+- License: MIT, 100x real-time on GPU
+- Quality: 6.5 dB SDR — lower but much faster, good for quick preview
 
-**UI integration:** Right-click any audio clip → "Separate Stems" → progress dialog → stems placed as new tracks.
+**UI integration:** Right-click any audio clip → "Separate Stems" → Tier 1 C++ runs immediately, stems appear as new tracks. No Python install required.
 
 ### 3.3 Auto-Mixing & Mastering
 
@@ -243,37 +287,43 @@ This produces editable stems — not just a flat audio file. No other product do
 │  Real-time audio thread (NEVER touched by AI code)              │
 │                                                                 │
 ├─────────────────────────────────────────────────────────────────┤
-│  AI BRIDGE (Worker Thread — C++)                                │
+│  AI WORKER THREAD (C++) — dispatches to correct tier            │
 │                                                                 │
-│  AICommandQueue → gRPC client → Python backend                  │
-│  Results → ValueTree → UI update on message thread             │
+│  AICommandQueue → routes by feature → Tier 1 or Tier 2         │
+│  Results → ValueTree → UI update on message thread              │
 │                                                                 │
-├─────────────────────────────────────────────────────────────────┤
-│  AI INFERENCE LAYER (Python 3.10+ / FastAPI)                    │
-│                                                                 │
-│  ┌──────────────┐ ┌──────────┐ ┌────────────┐ ┌─────────────┐ │
-│  │ DiffRhythm   │ │ Demucs   │ │ Matchering │ │   RVC v3    │ │
-│  │ MusicGen     │ │ v4       │ │ + Essentia │ │ StyleTTS2   │ │
-│  │ (generation) │ │ (stems)  │ │ (mastering)│ │ (cloning)   │ │
-│  └──────────────┘ └──────────┘ └────────────┘ └─────────────┘ │
-│  ONNX Runtime — cross-platform, CPU + GPU + Apple Silicon       │
-│                                                                 │
+├──────────────────────┬──────────────────────────────────────────┤
+│  TIER 1 — C++        │  TIER 2 — Python sidecar (gRPC)          │
+│  (embedded in app)   │  (auto-installs on first AI use)         │
+│                      │                                          │
+│  demucs.cpp          │  DiffRhythm / MusicGen (generation)      │
+│  (stem separation)   │  Matchering + Essentia (mastering)       │
+│                      │  RVC v3 / StyleTTS2 (voice cloning)      │
+│  ONNX Runtime C++    │  Ollama / Llama 3.1 (LLM orchestration)  │
+│  (noise reduction,   │                                          │
+│   small models)      │  FastAPI gRPC server on localhost:50051  │
+│                      │                                          │
+│  Zero dependencies   │  Requires Python 3.10+ + GPU recommended │
+├──────────────────────┴──────────────────────────────────────────┤
+│  TIER 3 — Cloud (optional SaaS subscription)                    │
+│  Managed GPU inference for heavy models / users without GPU     │
 ├─────────────────────────────────────────────────────────────────┤
 │  STORAGE                                                        │
-│  SQLite (local projects) · File system (audio/MIDI/models)     │
+│  SQLite (local projects) · File system (audio/MIDI/models)      │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-### Real-Time vs Offline Split (Critical Rule)
+### AI Task Routing Table
 
-| AI Task | Mode | Max Latency | Implementation |
-|---------|------|-------------|----------------|
-| Noise gate / de-noise | Real-time | <40ms | Quantized ONNX model, C++ |
-| Stem separation | Offline | 5–60s OK | Python gRPC |
-| Music generation | Offline | 10–30s OK | Python gRPC |
-| Mastering | Offline | 30–120s OK | Python gRPC |
-| Voice cloning (training) | Offline | 1–2 hours OK | Python gRPC |
-| Voice cloning (inference) | Near-real-time | <500ms | Python gRPC |
+| AI Task | Tier | Latency Budget | Implementation |
+|---------|------|----------------|----------------|
+| Noise reduction | Tier 1 | <40ms | ONNX Runtime C++ (in-process) |
+| Stem separation | Tier 1 | 5–60s OK | demucs.cpp (GGML, C++17) |
+| Music generation | Tier 2 | 10–30s OK | DiffRhythm via Python gRPC |
+| Mastering | Tier 2 | 30–120s OK | Matchering via Python gRPC |
+| Voice cloning training | Tier 2 | 1–2 hours OK | RVC v3 via Python gRPC |
+| Voice cloning inference | Tier 2 | <500ms OK | RVC v3 via Python gRPC |
+| Heavy generation (no GPU) | Tier 3 | 30–120s OK | Cloud endpoint |
 
 ---
 
@@ -325,24 +375,31 @@ WavyLabs/
 │   │       └── VoiceClonerView.h/.cpp
 │   │
 │   └── ai/
-│       ├── AICommandQueue.h/.cpp   ← queues async AI tasks
-│       ├── GrpcClient.h/.cpp       ← talks to Python backend
+│       ├── AICommandQueue.h/.cpp   ← routes tasks to Tier 1 or Tier 2
+│       ├── GrpcClient.h/.cpp       ← Tier 2: talks to Python sidecar
+│       ├── cpp/
+│       │   ├── DemucsRunner.h/.cpp ← Tier 1: wraps demucs.cpp
+│       │   └── OnnxRunner.h/.cpp   ← Tier 1: ONNX Runtime C++ wrapper
 │       └── proto/
 │           └── wavy_ai.proto       ← gRPC service definition
 │
-├── ai_backend/
+├── ai_backend/                     ← Tier 2: Python sidecar
 │   ├── requirements.txt
-│   ├── main.py                     ← FastAPI app entry
+│   ├── main.py                     ← gRPC server entry point
 │   ├── proto/
 │   │   └── wavy_ai.proto
 │   ├── musicgen/
 │   │   └── generator.py            ← DiffRhythm + MusicGen
-│   ├── demucs/
-│   │   └── separator.py            ← Demucs v4 stem separation
 │   ├── matchering/
 │   │   └── mastering.py            ← Matchering + Essentia
-│   └── rvc/
-│       └── cloner.py               ← RVC v3 voice cloning
+│   ├── rvc/
+│   │   └── cloner.py               ← RVC v3 voice cloning
+│   └── llm/
+│       └── orchestrator.py         ← Ollama / Llama 3.1 agentic pipeline
+│
+├── vendor/                         ← Tier 1: C++ AI dependencies
+│   ├── demucs.cpp/                 ← git submodule (MIT)
+│   └── onnxruntime/                ← ONNX Runtime headers + libs
 │
 └── tests/
     ├── engine_tests/
@@ -463,16 +520,38 @@ message CloneProgress {
 
 ---
 
-## 8. Python AI Backend Setup
+## 8. AI Backend Setup
+
+### Tier 1 — C++ (added to CMakeLists.txt)
+
+```cmake
+# Add demucs.cpp as submodule
+add_subdirectory(vendor/demucs.cpp)
+
+# Add ONNX Runtime
+find_package(onnxruntime REQUIRED)
+
+target_link_libraries(WavyLabs
+    PRIVATE
+        # ... existing JUCE/Tracktion links ...
+        demucs_cpp          # Tier 1 stem separation
+        onnxruntime         # Tier 1 ONNX inference
+)
+```
+
+**Adding demucs.cpp submodule:**
+```bash
+git submodule add https://github.com/sevagh/demucs.cpp vendor/demucs.cpp
+git submodule update --init --recursive
+```
+
+### Tier 2 — Python Sidecar
 
 ```python
-# ai_backend/main.py
-from fastapi import FastAPI
+# ai_backend/main.py — gRPC server, no Python setup for end user until first AI use
 import grpc
 from concurrent import futures
 import wavy_ai_pb2_grpc
-
-app = FastAPI()
 
 def serve():
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=4))
@@ -480,20 +559,24 @@ def serve():
     server.add_insecure_port('[::]:50051')
     server.start()
     server.wait_for_termination()
+```
 
+```
 # ai_backend/requirements.txt
-audiocraft>=1.0.0      # MusicGen
-demucs>=4.0.1          # Stem separation
-matchering>=2.0.0      # Mastering
-torch>=2.2.0           # PyTorch
+# NOTE: Demucs is NOT here — stem separation runs via Tier 1 (demucs.cpp)
+audiocraft>=1.0.0      # MusicGen / DiffRhythm (music generation)
+matchering>=2.0.0      # AI mastering
+essentia>=2.1          # Audio analysis
+torch>=2.2.0           # PyTorch (for MusicGen, RVC)
 torchaudio>=2.2.0
-onnxruntime-gpu>=1.17  # Cross-platform inference
-fastapi>=0.110.0
+ollama>=0.1.0          # Local LLM (Llama 3.1 orchestration)
 grpcio>=1.62.0
 grpcio-tools>=1.62.0
 numpy>=1.26.0
 scipy>=1.12.0
 ```
+
+**Auto-install pattern:** The C++ app checks if Python sidecar is running on localhost:50051. If not, it launches a bundled install script on first use of a Tier 2 feature, showing an "Installing AI features…" progress dialog.
 
 ---
 
@@ -586,12 +669,13 @@ Apple Silicon (M1/M2/M3) via Metal backend on ONNX Runtime — fully supported.
 
 | Risk | Impact | Mitigation |
 |------|--------|-----------|
-| AI latency breaks recording | High | Hard separation: real-time DSP vs offline AI |
-| MusicGen CC-BY-NC weights | Medium | Use DiffRhythm (Apache 2.0) for commercial tier |
-| Plugin crashes destabilize DAW | High | Isolate plugins in separate process; timeout on AI gRPC |
-| Model download size (1–10GB) | Medium | Lazy load on first use; quantized GGUF defaults |
-| GPU requirement alienates users | Medium | CPU fallback for all AI; cloud tier for GPU access |
-| Competing with established DAWs | Medium | AI-native angle + open source = unique positioning |
+| AI latency breaks recording | High | Hard separation: real-time DSP vs offline AI; Tier 1 never blocks |
+| MusicGen CC-BY-NC weights | Medium | Use DiffRhythm (Apache 2.0) as primary for commercial tier |
+| Plugin crashes destabilize DAW | High | Isolate plugins in separate process; timeout on AI gRPC calls |
+| Model download size (1–10GB) | Medium | Lazy load on first use; quantized GGUF defaults for Tier 1 |
+| Python setup friction (Tier 2) | Medium | Tier 1 covers stem separation with zero Python; Tier 2 only needed for generation/cloning |
+| GPU requirement alienates users | Medium | Tier 1 runs CPU-only; Tier 2 has CPU fallback; Tier 3 cloud for heavy lifting |
+| Competing with established DAWs | Medium | AI-native + open source + no-setup stem separation = clear differentiation |
 
 ---
 
@@ -608,19 +692,29 @@ Apple Silicon (M1/M2/M3) via Metal backend on ONNX Runtime — fully supported.
    - `Source/Views/LookAndFeel/AppLookAndFeel.cpp` — dark theme pattern
    - `Source/Views/Edit/Tracks/TracksView.cpp` — timeline/arrangement pattern
 
-4. Run Demucs locally to confirm AI works:
+4. Build and test demucs.cpp (Tier 1 — no Python):
    ```bash
-   pip install demucs
-   python -m demucs --two-stems=vocals my_song.mp3
+   git clone --recurse-submodules https://github.com/sevagh/demucs.cpp
+   cd demucs.cpp && mkdir build && cd build
+   cmake .. && cmake --build . --config Release
+   # Download GGML weights, then:
+   ./demucs.cpp.main my_song.mp3
    ```
 
-5. Run MusicGen locally to confirm VRAM:
+5. Run MusicGen locally (Tier 2) to confirm VRAM:
    ```bash
    pip install audiocraft
    python -c "from audiocraft.models import MusicGen; m = MusicGen.get_pretrained('small'); print('OK')"
    ```
 
-6. Set up WavyLabs git repo and scaffold CMakeLists.txt
+6. Test ONNX Runtime C++ with a simple audio model:
+   ```bash
+   # Download ONNX Runtime headers/libs from onnxruntime.ai
+   # Link against onnxruntime in a test CMake project
+   # Load a small .onnx model and run inference on a buffer
+   ```
+
+7. Set up WavyLabs git repo and scaffold CMakeLists.txt with demucs.cpp submodule
 
 ---
 
@@ -632,10 +726,13 @@ Apple Silicon (M1/M2/M3) via Metal backend on ONNX Runtime — fully supported.
 | JUCE | github.com/juce-framework/JUCE | UI + audio framework |
 | LMN-3-DAW | github.com/FundamentalFrequency/LMN-3-DAW | DAW structure reference |
 | awesome-juce | github.com/sudara/awesome-juce | JUCE component library list |
-| DiffRhythm | github.com/ASLP-lab/DiffRhythm | Music generation |
-| AudioCraft | github.com/facebookresearch/audiocraft | MusicGen |
-| Demucs | github.com/facebookresearch/demucs | Stem separation |
-| RVC v3 | github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI | Voice cloning |
-| Matchering | github.com/sergree/matchering | AI mastering |
-| Essentia | github.com/MTG/essentia | Audio analysis |
-| MusicGen fine-tune | github.com/ylacombe/musicgen-dreamboothing | Model training |
+| **demucs.cpp** | **github.com/sevagh/demucs.cpp** | **Tier 1: C++ stem separation (MIT)** |
+| **ONNX Runtime** | **onnxruntime.ai** | **Tier 1: C++ model inference** |
+| DiffRhythm | github.com/ASLP-lab/DiffRhythm | Tier 2: Music generation |
+| AudioCraft | github.com/facebookresearch/audiocraft | Tier 2: MusicGen |
+| Demucs (Python) | github.com/facebookresearch/demucs | Tier 2: Stem sep fallback |
+| RVC v3 | github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI | Tier 2: Voice cloning |
+| Matchering | github.com/sergree/matchering | Tier 2: AI mastering |
+| Essentia | github.com/MTG/essentia | Tier 2: Audio analysis |
+| MusicGen fine-tune | github.com/ylacombe/musicgen-dreamboothing | Model training reference |
+| Demucs ONNX (Mixxx) | mixxx.org/news/2025-10-27-gsoc2025-demucs-to-onnx | Demucs v4 ONNX conversion guide |
